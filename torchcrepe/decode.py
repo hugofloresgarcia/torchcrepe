@@ -34,22 +34,21 @@ def weighted_argmax(logits):
             logits[batch, end[batch, time]:, time] = -float('inf')
 
     # Construct weights
-    if not hasattr(weighted_argmax, 'weights'):
-        weights = torchcrepe.convert.bins_to_cents(torch.arange(360))
-        weighted_argmax.weights = weights[None, :, None]
+    # if not hasattr(weighted_argmax, 'weights'):
+    weights = torchcrepe.convert.bins_to_cents(torch.arange(360))
+    weights = weights[None, :, None]
 
-    # Ensure devices are the same (no-op if they are)
-    weighted_argmax.weights = weighted_argmax.weights.to(logits.device)
 
     # Convert to probabilities
     with torch.no_grad():
         probs = torch.sigmoid(logits)
 
     # Apply weights
-    cents = (weighted_argmax.weights * probs).sum(dim=1) / probs.sum(dim=1)
+    cents = (weights * probs).sum(dim=1) / probs.sum(dim=1)
 
     # Convert to frequency in Hz
     return bins, torchcrepe.convert.cents_to_frequency(cents)
+
 
 
 def viterbi(logits):
@@ -59,21 +58,21 @@ def viterbi(logits):
         xx, yy = np.meshgrid(range(360), range(360))
         transition = np.maximum(12 - abs(xx - yy), 0)
         transition = transition / transition.sum(axis=1, keepdims=True)
-        viterbi.transition = transition
+        viterbi.transition = torch.tensor(transition)
 
     # Normalize logits
     with torch.no_grad():
         probs = torch.nn.functional.softmax(logits, dim=1)
 
     # Convert to numpy
-    sequences = probs.cpu().numpy()
+    # sequences = probs.cpu().numpy()
 
     # Perform viterbi decoding
     bins = [librosa.sequence.viterbi(sequence, viterbi.transition)
-            for sequence in sequences]
+            for sequence in probs]
 
     # Convert to pytorch
-    bins = torch.tensor(bins, device=probs.device)
+    bins = torch.stack(bins)
 
     # Convert to frequency in Hz
     return bins, torchcrepe.convert.bins_to_frequency(bins)

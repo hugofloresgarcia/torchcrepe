@@ -1,4 +1,5 @@
 import warnings
+from typing import Optional
 
 import numpy as np
 import resampy
@@ -121,7 +122,7 @@ def predict(audio,
 
             # shape=(batch, 360, time / hop_length)
             probabilities = probabilities.reshape(
-                audio.size(0), -1, PITCH_BINS).transpose(1, 2)
+                audio.size(0), -1, 360).transpose(1, 2)
 
             # Convert probabilities to F0 and periodicity
             result = postprocess(probabilities,
@@ -563,12 +564,12 @@ def infer(frames, model='full', embed=False):
     return infer.model(frames, embed=embed)
 
 
-def postprocess(probabilities,
-                fmin=0.,
-                fmax=MAX_FMAX,
-                decoder=torchcrepe.decode.viterbi,
-                return_harmonicity=False,
-                return_periodicity=False):
+def postprocess(probabilities: torch.Tensor,
+                fmin: float=0.,
+                fmax: float=MAX_FMAX,
+                decoder_name: str='viterbi',
+                return_harmonicity: bool=False,
+                return_periodicity: bool=False) -> torch.Tensor:
     """Convert model output to F0 and periodicity
 
     Arguments
@@ -593,41 +594,36 @@ def postprocess(probabilities,
     probabilities = probabilities.detach()
 
     # Convert frequency range to pitch bin range
-    minidx = torchcrepe.convert.frequency_to_bins(torch.tensor(fmin))
+    minidx = torchcrepe.convert.frequency_to_bins(torch.tensor(fmin), 'floor')
     maxidx = torchcrepe.convert.frequency_to_bins(torch.tensor(fmax),
-                                                  torch.ceil)
+                                                  'ceil')
 
     # Remove frequencies outside of allowable range
     probabilities[:, :minidx] = -float('inf')
     probabilities[:, maxidx:] = -float('inf')
 
     # Perform argmax or viterbi sampling
-    bins, pitch = decoder(probabilities)
+    # if decoder_name == 'viterbi':
+        # bins, pitch = torchcrepe.decode.viterbi(probabilities)
+    if decoder_name == 'weighted_argmax':
+        bins, pitch = torchcrepe.decode.weighted_argmax(probabilities)
+    else:
+        raise ValueError
 
     # Deprecate return_harmonicity
     if return_harmonicity:
-        message = (
-            'The torchcrepe return_harmonicity argument is deprecated and '
-            'will be removed in a future release. Please use '
-            'return_periodicity. Rationale: if network confidence measured '
-            'harmonics, the value would be low for non-harmonic, periodic '
-            'sounds (e.g., sine waves). But this is not observed.')
-        warnings.warn(message, DeprecationWarning)
         return_periodicity = return_harmonicity
 
-    if not return_periodicity:
-        return pitch
+    return pitch
 
-    # Compute periodicity from probabilities and decoded pitch bins
-    return pitch, periodicity(probabilities, bins)
 
 
 def preprocess(audio,
-               sample_rate,
-               hop_length=None,
-               batch_size=None,
-               device='cpu',
-               pad=True):
+               sample_rate: int,
+               hop_length: Optional[int]=None,
+               batch_size: Optional[int]=None,
+               device: str='cpu',
+               pad: bool=True):
     """Convert audio to model input
 
     Arguments
@@ -650,41 +646,43 @@ def preprocess(audio,
     # Default hop length of 10 ms
     hop_length = sample_rate // 100 if hop_length is None else hop_length
 
-    # Resample
-    if sample_rate != SAMPLE_RATE:
-        audio = resample(audio, sample_rate)
-        hop_length = int(hop_length * SAMPLE_RATE / sample_rate)
+    # # Resample
+    # if sample_rate != SAMPLE_RATE:
+    #     audio = resample(audio, sample_rate)
+    #     hop_length = int(hop_length * SAMPLE_RATE / sample_rate)
 
     # Get total number of frames
 
     # Maybe pad
+    win_size: int = int(1024) # WINDOW_SIZE
     if pad:
         total_frames = 1 + int(audio.size(1) // hop_length)
         audio = torch.nn.functional.pad(
             audio,
-            (WINDOW_SIZE // 2, WINDOW_SIZE // 2))
+            (win_size // 2, win_size // 2))
     else:
-        total_frames = 1 + int((audio.size(1) - WINDOW_SIZE) // hop_length)
+        total_frames = 1 + int((audio.size(1) - win_size) // hop_length)
 
     # Default to running all frames in a single batch
     batch_size = total_frames if batch_size is None else batch_size
 
     # Generate batches
-    for i in range(0, total_frames, batch_size):
+    all_frames = []
+    for i in range(0, total_frames, int(batch_size)):
 
         # Batch indices
         start = max(0, i * hop_length)
         end = min(audio.size(1),
-                  (i + batch_size - 1) * hop_length + WINDOW_SIZE)
+                  (i + batch_size - 1) * hop_length + win_size)
 
         # Chunk
         frames = torch.nn.functional.unfold(
             audio[:, None, None, start:end],
-            kernel_size=(1, WINDOW_SIZE),
-            stride=(1, hop_length))
+            kernel_size=(1, win_size),
+            stride=[1, int(hop_length)])
 
         # shape=(1 + int(time / hop_length, 1024)
-        frames = frames.transpose(1, 2).reshape(-1, WINDOW_SIZE)
+        frames = frames.transpose(1, 2).reshape(-1, win_size)
 
         # Place on device
         frames = frames.to(device)
@@ -698,7 +696,8 @@ def preprocess(audio,
         frames /= torch.max(torch.tensor(1e-10, device=frames.device),
                             frames.std(dim=1, keepdim=True))
 
-        yield frames
+        all_frames.append(frames)
+    return all_frames
 
 
 ###############################################################################
@@ -709,7 +708,7 @@ def preprocess(audio,
 def periodicity(probabilities, bins):
     """Computes the periodicity from the network output and pitch bins"""
     # shape=(batch * time / hop_length, 360)
-    probs_stacked = probabilities.transpose(1, 2).reshape(-1, PITCH_BINS)
+    probs_stacked = probabilities.transpose(1, 2).reshape(-1, 360)
 
     # shape=(batch * time / hop_length, 1)
     bins_stacked = bins.reshape(-1, 1).to(torch.int64)

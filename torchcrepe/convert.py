@@ -1,5 +1,6 @@
 import scipy
 import torch
+from typing import List
 
 import torchcrepe
 
@@ -22,10 +23,12 @@ def bins_to_frequency(bins):
     return cents_to_frequency(bins_to_cents(bins))
 
 
-def cents_to_bins(cents, quantize_fn=torch.floor):
+def cents_to_bins(cents: torch.Tensor, quantize_fn: str = 'floor') -> int:
     """Converts cents to pitch bins"""
     bins = (cents - 1997.3794084376191) / torchcrepe.CENTS_PER_BIN
-    return quantize_fn(bins).int()
+    assert quantize_fn in ('floor', 'ceil')
+    result = torch.floor(bins) if quantize_fn=="floor" else torch.ceil(bins)
+    return result.int()
 
 
 def cents_to_frequency(cents):
@@ -33,7 +36,7 @@ def cents_to_frequency(cents):
     return 10 * 2 ** (cents / 1200)
 
 
-def frequency_to_bins(frequency, quantize_fn=torch.floor):
+def frequency_to_bins(frequency, quantize_fn: str='floor'):
     """Convert frequency in Hz to pitch bins"""
     return cents_to_bins(frequency_to_cents(frequency), quantize_fn)
 
@@ -48,10 +51,14 @@ def frequency_to_cents(frequency):
 ###############################################################################
 
 
-def dither(cents):
+def dither(cents:torch.Tensor):
     """Dither the predicted pitch in cents to remove quantization error"""
-    noise = scipy.stats.triang.rvs(c=0.5,
-                                   loc=-torchcrepe.CENTS_PER_BIN,
-                                   scale=2 * torchcrepe.CENTS_PER_BIN,
-                                   size=cents.size())
-    return cents + cents.new_tensor(noise)
+    loc: int=20
+    scale: int=2 * loc
+    size: List[int]=cents.size()
+
+    noise: torch.Tensor = torch.rand(size)
+    noise = (noise - 0.5) * 2
+    noise = noise * scale + loc
+                                   
+    return cents + noise

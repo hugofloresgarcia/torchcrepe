@@ -26,8 +26,23 @@ def model(device, capacity='full'):
 
     # Load weights
     file = os.path.join(os.path.dirname(__file__), 'assets', f'{capacity}.pth')
+    state = torch.load(file, map_location=device)
+    new_state = dict(state)
+    for key in state:
+        if 'conv' in key:
+            num = int(key[4])
+            keypat = key.replace(str(num), '')
+            new_key_pattern = f'b{num}.conv'
+            new_key = keypat.replace('conv', new_key_pattern)
+            new_state[new_key] = state[key]
+            del new_state[key]
+
+    breakpoint()
+    state = new_state
+
+
     torchcrepe.infer.model.load_state_dict(
-        torch.load(file, map_location=device))
+        state, strict=True)
 
     # Place on device
     torchcrepe.infer.model = torchcrepe.infer.model.to(torch.device(device))
